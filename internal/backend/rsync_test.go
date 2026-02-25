@@ -161,12 +161,16 @@ func TestParseStatsLine(t *testing.T) {
 			wantXfer: 56,
 		},
 		{
-			line:      "Total file size: 1,234,567",
+			line:      "Total file size: 1,234,567 bytes",
 			wantTotal: 1234567,
 		},
 		{
-			line:         "Total transferred file size: 456,789 ",
+			line:         "Total transferred file size: 456,789 bytes",
 			wantXferSize: 456789,
+		},
+		{
+			line:      "Total file size: 1.23G bytes",
+			wantTotal: 1073741824, // 1G
 		},
 	}
 
@@ -204,6 +208,47 @@ func TestParseIntComma(t *testing.T) {
 		got := parseIntComma(tt.input)
 		if got != tt.want {
 			t.Errorf("parseIntComma(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRsyncExitCodeMessage(t *testing.T) {
+	tests := []struct {
+		code int
+		want string
+	}{
+		{23, "partial transfer — some files/attrs were not transferred (check permissions and paths)"},
+		{255, "SSH connection failed — check host, port, and SSH key"},
+		{0, "unknown error"},
+		{999, "unknown error"},
+	}
+
+	for _, tt := range tests {
+		got := rsyncExitCodeMessage(tt.code)
+		if got != tt.want {
+			t.Errorf("rsyncExitCodeMessage(%d) = %q, want %q", tt.code, got, tt.want)
+		}
+	}
+}
+
+func TestIsFileLine(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{"src/main.go", true},
+		{"Documents/photo.jpg", true},
+		{"", false},
+		{"Number of files: 100", false},
+		{"Total file size: 1G bytes", false},
+		{"sending incremental file list", false},
+		{"sent 1234 bytes  received 56 bytes", false},
+	}
+
+	for _, tt := range tests {
+		got := isFileLine(tt.line)
+		if got != tt.want {
+			t.Errorf("isFileLine(%q) = %v, want %v", tt.line, got, tt.want)
 		}
 	}
 }

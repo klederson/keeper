@@ -11,8 +11,8 @@ import (
 )
 
 type Orchestrator struct {
-	mu       sync.Mutex
-	running  map[string]context.CancelFunc
+	mu      sync.Mutex
+	running map[string]context.CancelFunc
 }
 
 func NewOrchestrator() *Orchestrator {
@@ -28,7 +28,7 @@ func (o *Orchestrator) IsRunning(jobName string) bool {
 	return ok
 }
 
-func (o *Orchestrator) Run(ctx context.Context, job *config.Job, dryRun bool) (*backend.Result, error) {
+func (o *Orchestrator) Run(ctx context.Context, job *config.Job, dryRun bool, onProgress func(backend.ProgressEvent)) (*backend.Result, error) {
 	o.mu.Lock()
 	if _, running := o.running[job.Name]; running {
 		o.mu.Unlock()
@@ -45,10 +45,10 @@ func (o *Orchestrator) Run(ctx context.Context, job *config.Job, dryRun bool) (*
 		o.mu.Unlock()
 	}()
 
-	return RunJob(ctx, job, dryRun)
+	return RunJob(ctx, job, dryRun, onProgress)
 }
 
-func (o *Orchestrator) RunAll(ctx context.Context, jobs []config.Job, dryRun bool) map[string]*backend.Result {
+func (o *Orchestrator) RunAll(ctx context.Context, jobs []config.Job, dryRun bool, onProgress func(string, backend.ProgressEvent)) map[string]*backend.Result {
 	results := make(map[string]*backend.Result)
 	var mu sync.Mutex
 
@@ -57,7 +57,15 @@ func (o *Orchestrator) RunAll(ctx context.Context, jobs []config.Job, dryRun boo
 
 		slog.Info("running job", "job", job.Name)
 
-		result, err := o.Run(ctx, job, dryRun)
+		var jobProgress func(backend.ProgressEvent)
+		if onProgress != nil {
+			jobName := job.Name
+			jobProgress = func(evt backend.ProgressEvent) {
+				onProgress(jobName, evt)
+			}
+		}
+
+		result, err := o.Run(ctx, job, dryRun, jobProgress)
 		if err != nil {
 			slog.Error("job failed", "job", job.Name, "error", err)
 			result = &backend.Result{

@@ -19,9 +19,13 @@ type Result struct {
 }
 
 type BackupBackend interface {
-	Run(ctx context.Context, job *config.Job, dryRun bool) (*Result, error)
+	Run(ctx context.Context, job *config.Job, dryRun bool, onProgress func(ProgressEvent)) (*Result, error)
 	Validate(job *config.Job) error
 	Name() string
 }
 
-type ProgressFunc func(transferred int64, total int64, currentFile string)
+type ProgressEvent struct {
+	CurrentFile string
+	FilesCount  int
+	Phase       string // "transferring", "stats", "done"
+}

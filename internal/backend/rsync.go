@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -26,7 +27,7 @@ func (r *RsyncBackend) Name() string {
 
 func (r *RsyncBackend) Validate(job *config.Job) error {
 	if _, err := exec.LookPath("rsync"); err != nil {
-		return fmt.Errorf("rsync not found in PATH")
+		return fmt.Errorf("rsync not found in PATH — install it with your package manager")
 	}
 	if job.Destination.Host == "" {
 		return fmt.Errorf("destination host is required")
@@ -34,10 +35,15 @@ func (r *RsyncBackend) Validate(job *config.Job) error {
 	if job.Destination.Path == "" {
 		return fmt.Errorf("destination path is required")
 	}
+	for _, src := range job.Sources {
+		if src.Path == "" {
+			return fmt.Errorf("source path cannot be empty")
+		}
+	}
 	return nil
 }
 
-func (r *RsyncBackend) Run(ctx context.Context, job *config.Job, dryRun bool) (*Result, error) {
+func (r *RsyncBackend) Run(ctx context.Context, job *config.Job, dryRun bool, onProgress func(ProgressEvent)) (*Result, error) {
 	result := &Result{
 		StartedAt: time.Now(),
 	}
@@ -57,32 +63,73 @@ func (r *RsyncBackend) Run(ctx context.Context, job *config.Job, dryRun bool) (*
 			"source", srcPath,
 			"dest", dest,
 			"dry_run", dryRun,
-			"args", strings.Join(fullArgs, " "),
 		)
 
 		cmd := exec.CommandContext(ctx, "rsync", fullArgs...)
+
+		// Separate stdout and stderr
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("pipe error: %v", err))
 			continue
 		}
 
-		cmd.Stderr = cmd.Stdout
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
 
 		if err := cmd.Start(); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("start error: %v", err))
+			result.Errors = append(result.Errors, fmt.Sprintf("failed to start rsync: %v", err))
 			continue
 		}
 
+		// Read stdout line by line for progress + stats
+		filesCount := 0
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
-			slog.Debug("rsync output", "line", line)
+			slog.Debug("rsync", "out", line)
+
+			// Parse stats from the summary block
 			r.parseStatsLine(line, result)
+
+			// Track file transfers for progress
+			if isFileLine(line) {
+				filesCount++
+				if onProgress != nil {
+					onProgress(ProgressEvent{
+						CurrentFile: line,
+						FilesCount:  filesCount,
+						Phase:       "transferring",
+					})
+				}
+			}
 		}
 
-		if err := cmd.Wait(); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("rsync error: %v", err))
+		exitErr := cmd.Wait()
+		stderrOutput := strings.TrimSpace(stderrBuf.String())
+
+		if exitErr != nil {
+			exitCode := cmdExitCode(exitErr)
+			explanation := rsyncExitCodeMessage(exitCode)
+
+			// Collect the most useful error details
+			errParts := []string{fmt.Sprintf("rsync exited with code %d: %s", exitCode, explanation)}
+
+			// Add stderr lines (often contains the real error)
+			if stderrOutput != "" {
+				for _, line := range strings.Split(stderrOutput, "\n") {
+					line = strings.TrimSpace(line)
+					if line != "" && !strings.HasPrefix(line, "rsync error:") {
+						errParts = append(errParts, line)
+					}
+				}
+			}
+
+			result.Errors = append(result.Errors, errParts...)
+		}
+
+		if onProgress != nil {
+			onProgress(ProgressEvent{Phase: "done"})
 		}
 	}
 
@@ -146,11 +193,16 @@ func (r *RsyncBackend) buildDest(job *config.Job) string {
 	return fmt.Sprintf("%s:%s", host, path)
 }
 
+// Stats parsing — handles rsync --stats output
 var (
-	filesPattern    = regexp.MustCompile(`Number of files: (\d[\d,]*)`)
-	xferPattern     = regexp.MustCompile(`Number of (?:regular )?files transferred: (\d[\d,]*)`)
-	totalSizePattern = regexp.MustCompile(`Total file size: ([\d,\.]+[KMG]?)`)
-	xferSizePattern = regexp.MustCompile(`Total transferred file size: ([\d,\.]+)\s`)
+	// "Number of files: 1,234 (reg: 1,100, dir: 134)"
+	filesPattern = regexp.MustCompile(`Number of files: ([\d,]+)`)
+	// "Number of regular files transferred: 56"
+	xferPattern = regexp.MustCompile(`Number of (?:regular )?files transferred: ([\d,]+)`)
+	// "Total file size: 1.23G bytes" or "Total file size: 1,234,567 bytes"
+	totalSizePattern = regexp.MustCompile(`Total file size: ([\d,\.]+(?:\.\d+)?[KMG]?) bytes`)
+	// "Total transferred file size: 456,789 bytes"
+	xferSizePattern = regexp.MustCompile(`Total transferred file size: ([\d,\.]+(?:\.\d+)?[KMG]?) bytes`)
 )
 
 func (r *RsyncBackend) parseStatsLine(line string, result *Result) {
@@ -166,6 +218,31 @@ func (r *RsyncBackend) parseStatsLine(line string, result *Result) {
 	if m := xferSizePattern.FindStringSubmatch(line); len(m) > 1 {
 		result.BytesTransferred = parseSizeBytes(m[1])
 	}
+}
+
+// isFileLine returns true if the line looks like a file being transferred
+// (not a stats line, not blank, not a header)
+func isFileLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	// rsync stats/summary lines
+	if strings.HasPrefix(line, "Number of") ||
+		strings.HasPrefix(line, "Total file") ||
+		strings.HasPrefix(line, "Total transferred") ||
+		strings.HasPrefix(line, "Literal data") ||
+		strings.HasPrefix(line, "Matched data") ||
+		strings.HasPrefix(line, "File list") ||
+		strings.HasPrefix(line, "sent ") ||
+		strings.HasPrefix(line, "total size") ||
+		strings.HasPrefix(line, "sending incremental") ||
+		strings.HasPrefix(line, "building file list") ||
+		strings.HasPrefix(line, "created directory") ||
+		strings.HasPrefix(line, "Speedup is") ||
+		strings.HasPrefix(line, "rsync error") {
+		return false
+	}
+	return true
 }
 
 func parseIntComma(s string) int {
@@ -191,4 +268,42 @@ func parseSizeBytes(s string) int64 {
 
 	f, _ := strconv.ParseFloat(s, 64)
 	return int64(f) * multiplier
+}
+
+func cmdExitCode(err error) int {
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
+// rsyncExitCodeMessage translates rsync exit codes to human-readable messages.
+func rsyncExitCodeMessage(code int) string {
+	messages := map[int]string{
+		1:  "syntax or usage error",
+		2:  "protocol incompatibility",
+		3:  "errors selecting input/output files/dirs",
+		4:  "requested action not supported",
+		5:  "error starting client-server protocol",
+		6:  "daemon unable to append to log file",
+		10: "error in socket I/O",
+		11: "error in file I/O",
+		12: "error in rsync protocol data stream",
+		13: "errors with program diagnostics",
+		14: "error in IPC code",
+		20: "received SIGUSR1 or SIGINT",
+		21: "some error returned by waitpid()",
+		22: "error allocating core memory buffers",
+		23: "partial transfer — some files/attrs were not transferred (check permissions and paths)",
+		24: "partial transfer — vanished source files (files changed during transfer)",
+		25: "the --max-delete limit stopped deletions",
+		30: "timeout in data send/receive",
+		35: "timeout waiting for daemon connection",
+		255: "SSH connection failed — check host, port, and SSH key",
+	}
+
+	if msg, ok := messages[code]; ok {
+		return msg
+	}
+	return "unknown error"
 }

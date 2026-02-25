@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/klederson/keeper/internal/backend"
 	"github.com/klederson/keeper/internal/backup"
 	"github.com/klederson/keeper/internal/config"
 	"github.com/klederson/keeper/internal/ui"
@@ -28,11 +29,17 @@ var testCmd = &cobra.Command{
 			return fmt.Errorf("job %q not found", jobName)
 		}
 
-		fmt.Println(ui.Info(fmt.Sprintf("Testing job %q (dry-run)...", jobName)))
+		printJobHeader(job)
+		fmt.Println(ui.Warn("Dry-run mode — no files will be transferred"))
+		fmt.Println()
 
 		ctx := context.Background()
 		orch := backup.NewOrchestrator()
-		result, err := orch.Run(ctx, job, true)
+		result, err := orch.Run(ctx, job, true, func(evt backend.ProgressEvent) {
+			printProgress(jobName, evt)
+		})
+		clearProgress()
+
 		if err != nil {
 			return err
 		}

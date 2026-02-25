@@ -11,7 +11,7 @@ import (
 	"github.com/klederson/keeper/internal/ui"
 )
 
-func RunJob(ctx context.Context, job *config.Job, dryRun bool) (*backend.Result, error) {
+func RunJob(ctx context.Context, job *config.Job, dryRun bool, onProgress func(backend.ProgressEvent)) (*backend.Result, error) {
 	b, err := backend.New(job.Destination.Type)
 	if err != nil {
 		return nil, fmt.Errorf("creating backend: %w", err)
@@ -32,7 +32,7 @@ func RunJob(ctx context.Context, job *config.Job, dryRun bool) (*backend.Result,
 		"backend", b.Name(),
 	)
 
-	result, err := b.Run(ctx, job, dryRun)
+	result, err := b.Run(ctx, job, dryRun, onProgress)
 	if err != nil {
 		return result, fmt.Errorf("backup failed: %w", err)
 	}

@@ -86,7 +86,7 @@ func (s *Scheduler) runJob(job *config.Job) {
 	slog.Info("scheduler triggered job", "job", job.Name)
 
 	ctx := context.Background()
-	result, err := s.orchestrator.Run(ctx, job, false)
+	result, err := s.orchestrator.Run(ctx, job, false, nil)
 	if err != nil {
 		slog.Error("scheduled job failed", "job", job.Name, "error", err)
 		return
