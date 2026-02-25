@@ -1,0 +1,46 @@
+# Keeper - Backup Configuration
+# Place this file at ~/.config/keeper/config.yaml
+# Or run 'keeper init' to generate it interactively.
+
+# Global settings
+log_dir: "~/.local/share/keeper/logs"
+log_level: "info"  # debug, info, warn, error
+
+# Backup jobs
+jobs:
+  - name: "projetos"
+    sources:
+      - path: "/home/user/Projects"
+        include:
+          - "**/*.go"
+          - "**/*.ts"
+          - "**/*.py"
+        exclude:
+          - "node_modules/"
+          - ".git/"
+          - "vendor/"
+          - "*.tmp"
+    destination:
+      type: "rsync"
+      host: "backup.server.com"
+      user: "backupuser"
+      path: "/backups/projetos"
+      ssh_key: "~/.ssh/backup_key"
+      port: 22
+    schedule: "0 2 * * *"      # 2h da manha, todo dia
+    bandwidth: "0"              # sem limite (0 = ilimitado)
+    delete: false               # nao deletar arquivos no destino
+    compress: true              # rsync -z
+
+  - name: "documentos"
+    sources:
+      - path: "/home/user/Documents"
+      - path: "/home/user/Pictures"
+    destination:
+      type: "rsync"
+      host: "nas.local"
+      user: "backup"
+      path: "/volume1/backups/docs"
+      ssh_key: "~/.ssh/nas_key"
+    schedule: "@daily"
+    bandwidth: "500k"

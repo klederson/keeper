@@ -1,0 +1,26 @@
+[Unit]
+Description=Keeper Backup Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/go/bin/keeper daemon start
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=keeper
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/keeper %h/.local/share/keeper
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target
